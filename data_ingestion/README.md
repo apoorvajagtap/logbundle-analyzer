@@ -1,0 +1,1 @@
+Ensure to have the supportbundle available in ./bundles/ directory in pwd.
