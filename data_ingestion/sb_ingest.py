@@ -1,11 +1,13 @@
 from llama_index.core import SimpleDirectoryReader
-from llama_index.readers.remote_depth import RemoteDepthReader
+# from llama_index.readers.remote_depth import RemoteDepthReader
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.schema import Document, MetadataMode
 import chromadb
 import os
 import patoolib
+
+import constants
 
 SUPPORTBUNDLE_DIR = "./bundles/"
 SUPPORTBUNDLE_PATH =  "20251124.zip"
@@ -73,37 +75,35 @@ def chunk_content(content):
     for i in range(0, len(content), batch_size):
         batch = content[i:i+batch_size]
         batch = content[i:i+batch_size]
-    batch_num = i//batch_size + 1
-    total_batches = (len(content) + batch_size - 1)//batch_size
-    print(f"[+] Processing batch {batch_num}/{total_batches}")
+        batch_num = i//batch_size + 1
+        total_batches = (len(content) + batch_size - 1)//batch_size
+        print(f"[+] Processing batch {batch_num}/{total_batches}")
 
-    # Process each document individually in this batch
-    for doc_idx, d in enumerate(batch):
-        global_idx = i + doc_idx
+        # Process each document individually in this batch
+        for doc_idx, d in enumerate(batch):
+            global_idx = i + doc_idx
 
-        if not d.text or len(d.text.strip()) < 10:
-            continue
+            if not d.text or len(d.text.strip()) < 10:
+                continue
 
-        # Log progress for each document
-        text_len = len(d.text)
-        file_info = d.metadata.get('file_name', 'unknown') if hasattr(d, 'metadata') else 'unknown'
-        print(f"  [+] Doc {global_idx+1}/{len(content)}: {file_info} ({text_len} chars)")
+            # Log progress for each document
+            text_len = len(d.text)
+            if text_len > 500_000:
+                print(f"    [!] Truncating from {text_len} to 500k chars")
+                truncated_text = d.text[:500_000]
+            else:
+                truncated_text = d.text
 
-        # Skip or truncate extremely large documents
-        if text_len > 500_000:
-            print(f"    [!] Truncating from {text_len} to 500k chars")
-            d.text = d.text[:500_000]
+            try:
+                doc_obj = Document(text=truncated_text, metadata=d.metadata)
+                nodes = splitter.get_nodes_from_documents([doc_obj])
+                all_nodes.extend(nodes)
+                print(f"    [+] Created {len(nodes)} chunks")
+            except Exception as e:
+                print(f"    [!] Error processing doc {global_idx}: {e}")
+                continue
 
-        try:
-            doc_obj = Document(text=d.text)
-            nodes = splitter.get_nodes_from_documents([doc_obj])
-            all_nodes.extend(nodes)
-            print(f"    [+] Created {len(nodes)} chunks")
-        except Exception as e:
-            print(f"    [!] Error processing doc {global_idx}: {e}")
-            continue
-
-        print(f"[+] Batch {batch_num} complete (total: {len(all_nodes)} chunks)")
+            print(f"[+] Batch {batch_num} complete (total: {len(all_nodes)} chunks)")
 
     print(f"[+] Created {len(all_nodes)} total chunks")
     return all_nodes
@@ -156,14 +156,14 @@ def store_in_db(nodes, embeddings):
     """Store node embeddings and metadata into a persistent ChromaDB collection."""
     print("[+] Storing vectors in ChromaDB...")
     try:
-        existing = client.get_collection(name="supportbundle")
+        existing = client.get_collection(name=constants.COLLECTION_SB)
         client.delete_collection(existing.name)
         print("[+] Deleted existing collection...")
     except:
         pass
 
     collection = client.get_or_create_collection(
-        name="supportbundle",
+        name=constants.COLLECTION_SB,
     )
 
     # ChromaDB has a max batch size limit - split into chunks
@@ -197,59 +197,59 @@ def store_in_db(nodes, embeddings):
     print(f"[+] Successfully stored {total_nodes} vectors in ChromaDB")
 
 
-def query_db(model, data):
-    """Query ChromaDB using HF embedding of the user prompt and print top matches."""
-    print("[+] Querying ChromaDB...")
-
-    try:
-        collection = client.get_collection("supportbundle")
-    except Exception as e:
-        print(f"[!] Error: Collection 'supportbundle' not found: {e}")
-        return None
-
-    # Handle both string and list input
-    query_text = data[0] if isinstance(data, list) else data
-
-    # Get embedding
-    query_embedding = model.get_text_embedding(query_text)
-    if hasattr(query_embedding, 'tolist'):
-        query_embedding = query_embedding.tolist()
-
-    # Query the collection
-    try:
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=5
-        )
-    except Exception as e:
-        print(f"[!] Query failed: {e}")
-        return None
-
-    # Check if we got results
-    if not results["documents"][0]:
-        print("No results found.")
-        return results
-
-    # Display results
-    print(f"\nQuery: {query_text}\n")
-    print("="*80)
-
-    for i, doc in enumerate(results["documents"][0]):
-        metadata = results["metadatas"][0][i] if results["metadatas"] else {}
-        distance = results["distances"][0][i]
-
-        # Convert distance to similarity score (0-1, higher = more similar)
-        # For L2 distance, you can use: similarity = 1 / (1 + distance)
-        similarity = 1 / (1 + distance)
-
-        print(f"\n--- Result {i+1} ---")
-        print(f"Distance: {distance:.4f} | Similarity: {similarity:.4f}")
-        print(f"Title: {metadata.get('title', 'N/A')}")
-        print(f"Source: {metadata.get('source', 'N/A')}")
-        print(f"Content snippet:\n{doc[:300]}...")
-        print("-"*80)
-
-    return results
+# def query_db(model, data):
+#     """Query ChromaDB using HF embedding of the user prompt and print top matches."""
+#     print("[+] Querying ChromaDB...")
+#
+#     try:
+#         collection = client.get_collection("supportbundle")
+#     except Exception as e:
+#         print(f"[!] Error: Collection 'supportbundle' not found: {e}")
+#         return None
+#
+#     # Handle both string and list input
+#     query_text = data[0] if isinstance(data, list) else data
+#
+#     # Get embedding
+#     query_embedding = model.get_text_embedding(query_text)
+#     if hasattr(query_embedding, 'tolist'):
+#         query_embedding = query_embedding.tolist()
+#
+#     # Query the collection
+#     try:
+#         results = collection.query(
+#             query_embeddings=[query_embedding],
+#             n_results=5
+#         )
+#     except Exception as e:
+#         print(f"[!] Query failed: {e}")
+#         return None
+#
+#     # Check if we got results
+#     if not results["documents"][0]:
+#         print("No results found.")
+#         return results
+#
+#     # Display results
+#     print(f"\nQuery: {query_text}\n")
+#     print("="*80)
+#
+#     for i, doc in enumerate(results["documents"][0]):
+#         metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+#         distance = results["distances"][0][i]
+#
+#         # Convert distance to similarity score (0-1, higher = more similar)
+#         # For L2 distance, you can use: similarity = 1 / (1 + distance)
+#         similarity = 1 / (1 + distance)
+#
+#         print(f"\n--- Result {i+1} ---")
+#         print(f"Distance: {distance:.4f} | Similarity: {similarity:.4f}")
+#         print(f"Title: {metadata.get('title', 'N/A')}")
+#         print(f"Source: {metadata.get('source', 'N/A')}")
+#         print(f"Content snippet:\n{doc[:300]}...")
+#         print("-"*80)
+#
+#     return results
 
 # def query_db(model, data):
 #     """Query ChromaDB using HF embedding of the user prompt and print top matches."""
@@ -286,7 +286,7 @@ def main():
     embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en")
     # # embeddings = embed_nodes(embed_model, nodes)
     store_in_db(nodes, embed_nodes(embed_model, nodes))
-    query_db(embed_model, ["backup target error recurring failure"])
+    # query_db(embed_model, ["backup target error recurring failure"])
 
 if __name__ == "__main__":
     main()
